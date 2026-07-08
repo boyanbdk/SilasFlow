@@ -16,6 +16,18 @@ struct SilasFlowApp: App {
             Image(systemName: controller.state.menuBarSymbol)
         }
         .menuBarExtraStyle(.window)
+
+        SwiftUI.Settings {
+            SettingsView()
+                .environmentObject(controller)
+        }
+
+        Window("Fix Transcript", id: "fixTranscript") {
+            FixTranscriptView()
+                .environmentObject(controller)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
 

@@ -47,8 +47,13 @@ final class DictationController: ObservableObject {
     private let transcriber = Transcriber()
     private let hotkey = HotkeyManager()
     private let settings = Settings.shared
+    let overlay = OverlayController()
 
-    private init() {}
+    private init() {
+        recorder.onLevel = { [weak self] level in
+            Task { @MainActor in self?.overlay.push(level: level) }
+        }
+    }
 
     /// Called once at app launch.
     func start() {
@@ -131,8 +136,10 @@ final class DictationController: ObservableObject {
         do {
             try recorder.start()
             state = .recording
+            overlay.showListening()
         } catch {
             state = .error(error.localizedDescription)
+            overlay.showErrorAndHide()
         }
     }
 
@@ -142,9 +149,11 @@ final class DictationController: ObservableObject {
         // Ignore accidental taps shorter than ~0.3 s.
         guard samples.count > Int(Recorder.sampleRate * 0.3) else {
             state = .idle
+            overlay.hide()
             return
         }
         state = .processing
+        overlay.showProcessing()
         let useAI = settings.aiCleanup
         let restoreClipboard = settings.restoreClipboard
         let rules = VocabCorrector.parse(settings.corrections)
@@ -159,6 +168,7 @@ final class DictationController: ObservableObject {
                     Diag.log("PIPELINE: empty transcript, nothing to inject")
                     lastOutcome = "Didn't catch that — heard only silence. Try again?"
                     state = .idle
+                    overlay.showErrorAndHide()
                     return
                 }
                 var cleaned = await CleanupEngine.clean(raw, useAI: useAI)
@@ -170,10 +180,63 @@ final class DictationController: ObservableObject {
                     : "Copied — press ⌘V (grant Accessibility for auto-paste)"
                 refreshPermissions()
                 state = .idle
+                overlay.hide()
             } catch {
                 Diag.log("PIPELINE: transcription failed: \(error)")
                 state = .error("Transcription failed: \(error.localizedDescription)")
+                overlay.showErrorAndHide()
             }
         }
+    }
+
+    // MARK: - Teach loop ("Fix last transcript")
+
+    /// Diffs the original transcript against the user's correction, saves a
+    /// `heard = correct` rule (word-level, common prefix/suffix trimmed), and
+    /// adds the corrected phrase to the vocabulary. Returns a description of
+    /// what was learned, or nil if nothing usable changed.
+    @discardableResult
+    func learnCorrection(original: String, corrected: String) -> String? {
+        let originalTrimmed = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        let correctedTrimmed = corrected.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !correctedTrimmed.isEmpty, originalTrimmed != correctedTrimmed else { return nil }
+
+        var heardWords = originalTrimmed.split(separator: " ").map(String.init)
+        var correctWords = correctedTrimmed.split(separator: " ").map(String.init)
+
+        // Trim the common prefix and suffix so the rule targets just the
+        // differing middle segment.
+        while let h = heardWords.first, let c = correctWords.first, h == c {
+            heardWords.removeFirst(); correctWords.removeFirst()
+        }
+        while let h = heardWords.last, let c = correctWords.last, h == c {
+            heardWords.removeLast(); correctWords.removeLast()
+        }
+        let heard = heardWords.joined(separator: " ")
+        let correct = correctWords.joined(separator: " ")
+        guard !heard.isEmpty, !correct.isEmpty else { return nil }
+
+        // Append the rule (skip exact duplicates).
+        let newRule = "\(heard) = \(correct)"
+        let existing = VocabCorrector.parse(settings.corrections)
+        if !existing.contains(where: { $0.heard.lowercased() == heard.lowercased() }) {
+            settings.corrections = settings.corrections.isEmpty
+                ? newRule
+                : settings.corrections + "\n" + newRule
+        }
+
+        // Short corrected phrases are worth biasing transcription toward.
+        if correctWords.count <= 4 {
+            let vocabTerms = settings.vocabulary
+                .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            if !vocabTerms.contains(where: { $0.lowercased() == correct.lowercased() }) {
+                settings.vocabulary = settings.vocabulary.isEmpty
+                    ? correct
+                    : settings.vocabulary + ", " + correct
+            }
+        }
+
+        Diag.log("TEACH: learned \"\(heard)\" → \"\(correct)\"")
+        return "Learned: “\(heard)” → “\(correct)”"
     }
 }
