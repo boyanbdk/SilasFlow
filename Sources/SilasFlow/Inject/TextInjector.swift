@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
 
@@ -15,24 +16,34 @@ enum TextInjector {
     /// Whether we're currently trusted to synthesize keystrokes.
     static var canPaste: Bool { AXIsProcessTrusted() }
 
+    private static var lastPasteAt: Date?
+
     @discardableResult
     static func insert(_ text: String, restoreClipboard: Bool) -> Outcome {
         let pasteboard = NSPasteboard.general
         let saved = restoreClipboard ? snapshot(of: pasteboard) : nil
 
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-
         guard AXIsProcessTrusted() else {
+            // Manual-paste fallback: leave the raw text (no auto-spacing, since
+            // the user positions the cursor themselves).
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
             Diag.log("INJECT: AXIsProcessTrusted=false → copied \(text.count) chars to clipboard only (press ⌘V yourself)")
             return .copiedOnly
         }
+
+        // Auto-space: prepend a space when the cursor sits right after a word so
+        // consecutive dictations don't jam together ("happy.you" → "happy. you").
+        let out = needsLeadingSpace() ? " " + text : text
+        pasteboard.clearContents()
+        pasteboard.setString(out, forType: .string)
+        lastPasteAt = Date()
 
         // Let the pasteboard settle before synthesizing the keystroke; some
         // apps read the pasteboard lazily on the ⌘V event.
         usleep(60_000) // 60 ms
         sendCmdV()
-        Diag.log("INJECT: AXIsProcessTrusted=true → posted ⌘V for \(text.count) chars")
+        Diag.log("INJECT: posted ⌘V for \(out.count) chars (leadingSpace=\(out.hasPrefix(" ")))")
 
         if let saved {
             // Give the target app time to read the pasteboard before restoring.
@@ -41,6 +52,48 @@ enum TextInjector {
             }
         }
         return .pasted
+    }
+
+    /// Decides whether to prepend a space. Reads the character before the caret
+    /// in the focused text field via the Accessibility API:
+    ///   - caret at field start, or preceding char already whitespace → no space
+    ///   - preceding char is a normal character → add a space
+    ///   - can't determine (app doesn't expose AX text) → add a space only if we
+    ///     pasted recently (likely appending to earlier dictation)
+    private static func needsLeadingSpace() -> Bool {
+        switch precedingIsWhitespaceOrStart() {
+        case .some(true): return false
+        case .some(false): return true
+        case .none:
+            if let last = lastPasteAt, Date().timeIntervalSince(last) < 300 { return true }
+            return false
+        }
+    }
+
+    /// true = caret at start or preceded by whitespace; false = preceded by a
+    /// normal char; nil = undeterminable.
+    private static func precedingIsWhitespaceOrStart() -> Bool? {
+        let system = AXUIElementCreateSystemWide()
+        var focusedRef: AnyObject?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+              let focused = focusedRef else { return nil }
+        let element = focused as! AXUIElement
+
+        var rangeRef: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
+              let rangeValue = rangeRef else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(rangeValue as! AXValue, .cfRange, &range) else { return nil }
+        if range.location <= 0 { return true } // caret at field start
+
+        var valueRef: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
+              let text = valueRef as? String else { return nil }
+        let units = Array(text.utf16)
+        let idx = range.location - 1
+        guard idx >= 0, idx < units.count, let scalar = Unicode.Scalar(units[idx]) else { return nil }
+        let ch = Character(scalar)
+        return ch.isWhitespace || ch.isNewline
     }
 
     /// Diagnostic: paste a known marker string right now (used by the menu's
