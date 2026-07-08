@@ -26,6 +26,16 @@ final class Settings: ObservableObject {
         didSet { defaults.set(hotkeyID, forKey: "hotkeyID") }
     }
 
+    /// Comma-separated vocabulary terms that bias transcription (names, jargon).
+    @Published var vocabulary: String {
+        didSet { defaults.set(vocabulary, forKey: "vocabulary") }
+    }
+
+    /// Correction rules, one per line as `heard = correct`.
+    @Published var corrections: String {
+        didSet { defaults.set(corrections, forKey: "corrections") }
+    }
+
     static let availableModels = ["tiny.en", "base.en", "small.en", "large-v3_turbo"]
 
     private init() {
@@ -34,10 +44,14 @@ final class Settings: ObservableObject {
             "aiCleanup": true,
             "restoreClipboard": true,
             "hotkeyID": "opt-space",
+            "vocabulary": "SilasFlow",
+            "corrections": "C was Flow = SilasFlow\nSilas Flow = SilasFlow\nSilasflow = SilasFlow\nSilas flow = SilasFlow",
         ])
         modelName = defaults.string(forKey: "modelName") ?? "base.en"
         aiCleanup = defaults.bool(forKey: "aiCleanup")
         restoreClipboard = defaults.bool(forKey: "restoreClipboard")
         hotkeyID = defaults.string(forKey: "hotkeyID") ?? "opt-space"
+        vocabulary = defaults.string(forKey: "vocabulary") ?? "SilasFlow"
+        corrections = defaults.string(forKey: "corrections") ?? ""
     }
 }

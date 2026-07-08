@@ -38,8 +38,10 @@ final class DictationController: ObservableObject {
 
     @Published private(set) var state: State = .loadingModel
     @Published private(set) var lastTranscript: String = ""
+    @Published private(set) var lastOutcome: String = ""
     @Published var micGranted = Permissions.microphoneGranted
     @Published var accessibilityGranted = Permissions.accessibilityGranted
+    @Published var launchAtLogin = LoginItem.isEnabled
 
     private let recorder = Recorder()
     private let transcriber = Transcriber()
@@ -90,6 +92,28 @@ final class DictationController: ObservableObject {
     func refreshPermissions() {
         micGranted = Permissions.microphoneGranted
         accessibilityGranted = Permissions.accessibilityGranted
+        launchAtLogin = LoginItem.isEnabled
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        LoginItem.setEnabled(enabled)
+        launchAtLogin = LoginItem.isEnabled
+    }
+
+    /// Diagnostic: after a short countdown (so you can click into a text field),
+    /// paste a marker string. Confirms Accessibility/paste works without dictating.
+    func runPasteTest() {
+        refreshPermissions()
+        Diag.log("TEST: paste test requested (AXIsProcessTrusted=\(TextInjector.canPaste)). Countdown 3s…")
+        state = .processing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            let outcome = TextInjector.testPaste()
+            self?.lastOutcome = outcome == .pasted
+                ? "Test: pasted automatically ✅"
+                : "Test: Accessibility denied — copied only ❌"
+            self?.refreshPermissions()
+            self?.state = .idle
+        }
     }
 
     // MARK: - Pipeline
@@ -123,20 +147,31 @@ final class DictationController: ObservableObject {
         state = .processing
         let useAI = settings.aiCleanup
         let restoreClipboard = settings.restoreClipboard
+        let rules = VocabCorrector.parse(settings.corrections)
+        let promptText = VocabCorrector.prompt(from: settings.vocabulary, rules: rules)
 
+        Diag.log("PIPELINE: recorded \(String(format: "%.2f", Double(samples.count) / Recorder.sampleRate))s, transcribing…")
         Task {
             do {
-                let raw = try await transcriber.transcribe(samples)
+                let raw = try await transcriber.transcribe(samples, promptText: promptText)
+                Diag.log("PIPELINE: raw transcript = \"\(raw)\"")
                 guard !raw.isEmpty else {
+                    Diag.log("PIPELINE: empty transcript, nothing to inject")
+                    lastOutcome = "Didn't catch that — heard only silence. Try again?"
                     state = .idle
                     return
                 }
-                let cleaned = await CleanupEngine.clean(raw, useAI: useAI)
+                var cleaned = await CleanupEngine.clean(raw, useAI: useAI)
+                cleaned = VocabCorrector.apply(cleaned, rules: rules)
                 lastTranscript = cleaned
-                TextInjector.insert(cleaned, restoreClipboard: restoreClipboard)
+                let outcome = TextInjector.insert(cleaned, restoreClipboard: restoreClipboard)
+                lastOutcome = outcome == .pasted
+                    ? "Pasted automatically ✅"
+                    : "Copied — press ⌘V (grant Accessibility for auto-paste)"
                 refreshPermissions()
                 state = .idle
             } catch {
+                Diag.log("PIPELINE: transcription failed: \(error)")
                 state = .error("Transcription failed: \(error.localizedDescription)")
             }
         }

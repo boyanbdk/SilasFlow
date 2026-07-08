@@ -1,16 +1,27 @@
 import AVFoundation
 import Foundation
 
-/// Captures microphone audio with AVAudioEngine and accumulates
-/// 16 kHz mono Float32 samples (the format Whisper models expect).
+/// Captures microphone audio and accumulates 16 kHz mono Float32 samples
+/// (the format Whisper models expect).
+///
+/// A FRESH AVAudioEngine is created for every recording session: reusing one
+/// engine across stop/start cycles can silently deliver zeroed (silent)
+/// buffers after the first cycle on modern macOS — recording "works" (buffers
+/// arrive, durations count up) but contains no audio, so Whisper returns "".
 final class Recorder {
     static let sampleRate: Double = 16_000
 
-    private let engine = AVAudioEngine()
+    private var engine: AVAudioEngine?
     private var converter: AVAudioConverter?
     private let lock = NSLock()
     private var samples: [Float] = []
+    private var sumSquares: Double = 0
+    private var peak: Float = 0
     private(set) var isRecording = false
+
+    /// Live loudness callback (0…1-ish RMS per buffer), for UI level meters.
+    /// Called on the audio thread — hop to the main actor before touching UI.
+    var onLevel: ((Float) -> Void)?
 
     private lazy var outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -21,11 +32,19 @@ final class Recorder {
 
     func start() throws {
         guard !isRecording else { return }
-        lock.lock(); samples.removeAll(); lock.unlock()
+        lock.lock()
+        samples.removeAll()
+        sumSquares = 0
+        peak = 0
+        lock.unlock()
+
+        // Fresh engine every session (see class comment).
+        let engine = AVAudioEngine()
+        self.engine = engine
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0 else {
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
             throw RecorderError.noInputDevice
         }
         converter = AVAudioConverter(from: inputFormat, to: outputFormat)
@@ -36,20 +55,25 @@ final class Recorder {
         engine.prepare()
         try engine.start()
         isRecording = true
-        Log.audio.info("Recording started (input: \(inputFormat.sampleRate, privacy: .public) Hz, \(inputFormat.channelCount, privacy: .public) ch)")
+        Diag.log("AUDIO: recording started (input \(Int(inputFormat.sampleRate)) Hz, \(inputFormat.channelCount) ch)")
     }
 
     /// Stops the engine and returns everything captured as 16 kHz mono Float32.
     func stop() -> [Float] {
-        guard isRecording else { return [] }
+        guard isRecording, let engine else { return [] }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        self.engine = nil
+        converter = nil
         isRecording = false
 
         lock.lock(); defer { lock.unlock() }
         let result = samples
         samples = []
-        Log.audio.info("Recording stopped: \(result.count, privacy: .public) samples (\(Double(result.count) / Self.sampleRate, format: .fixed(precision: 2), privacy: .public) s)")
+        let rms = result.isEmpty ? 0 : sqrt(sumSquares / Double(result.count))
+        Diag.log(String(format: "AUDIO: stopped — %.2fs, rms %.4f, peak %.4f%@",
+                        Double(result.count) / Self.sampleRate, rms, peak,
+                        rms < 0.001 ? " ⚠️ SILENT INPUT" : ""))
         return result
     }
 
@@ -71,12 +95,27 @@ final class Recorder {
             return buffer
         }
         if let error {
-            Log.audio.error("Conversion error: \(error.localizedDescription, privacy: .public)")
+            Diag.log("AUDIO: conversion error: \(error.localizedDescription)")
             return
         }
         guard let channel = converted.floatChannelData?[0], converted.frameLength > 0 else { return }
         let chunk = Array(UnsafeBufferPointer(start: channel, count: Int(converted.frameLength)))
-        lock.lock(); samples.append(contentsOf: chunk); lock.unlock()
+
+        var chunkSquares: Double = 0
+        var chunkPeak: Float = 0
+        for sample in chunk {
+            chunkSquares += Double(sample * sample)
+            chunkPeak = max(chunkPeak, abs(sample))
+        }
+        let level = chunk.isEmpty ? 0 : Float(sqrt(chunkSquares / Double(chunk.count)))
+
+        lock.lock()
+        samples.append(contentsOf: chunk)
+        sumSquares += chunkSquares
+        peak = max(peak, chunkPeak)
+        lock.unlock()
+
+        onLevel?(level)
     }
 }
 

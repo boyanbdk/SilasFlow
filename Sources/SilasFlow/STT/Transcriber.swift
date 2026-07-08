@@ -23,10 +23,21 @@ actor Transcriber {
     var isReady: Bool { whisperKit != nil }
 
     /// Transcribes 16 kHz mono Float32 samples to raw text.
-    func transcribe(_ samples: [Float]) async throws -> String {
+    /// `promptText` (custom vocabulary) biases the decoder toward those spellings.
+    func transcribe(_ samples: [Float], promptText: String = "") async throws -> String {
         guard let whisperKit else { throw TranscriberError.modelNotLoaded }
         let start = Date()
-        let results = try await whisperKit.transcribe(audioArray: samples)
+
+        var options = DecodingOptions()
+        options.language = "en"
+        options.usePrefillPrompt = true
+        if !promptText.isEmpty, let tokenizer = whisperKit.tokenizer {
+            options.promptTokens = tokenizer.encode(text: " " + promptText)
+            options.usePrefillPrompt = true
+            Log.stt.info("Using vocab prompt (\(promptText.count, privacy: .public) chars)")
+        }
+
+        let results = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
         let text = results
             .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
             .joined(separator: " ")
