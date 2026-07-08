@@ -4,6 +4,10 @@ Fully on-device push-to-talk dictation for macOS — a local, private Wispr Flow
 **Hold a hotkey, speak, release** → clean text is pasted at your cursor in any app.
 No cloud, no API keys; audio and text never leave this Mac.
 
+> **Just want to install and use it?** See **[FOR_FRIENDS.md](FOR_FRIENDS.md)** — a
+> non-technical, step-by-step guide to building it with Claude Code (no coding required),
+> plus why this is shipped as source rather than a pre-built app.
+
 ## How it works
 
 ```
