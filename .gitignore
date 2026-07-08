@@ -1,0 +1,19 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.pins
+
+# Xcode
+*.xcodeproj/xcuserdata/
+xcuserdata/
+DerivedData/
+
+# Built app bundle (produced by scripts/build)
+SilasFlow.app/
+
+# macOS
+.DS_Store
+
+# WhisperKit downloaded models (large, fetched at runtime)
+Models/
+*.mlmodelc
