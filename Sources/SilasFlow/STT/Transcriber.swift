@@ -23,19 +23,21 @@ actor Transcriber {
     var isReady: Bool { whisperKit != nil }
 
     /// Transcribes 16 kHz mono Float32 samples to raw text.
-    /// `promptText` (custom vocabulary) biases the decoder toward those spellings.
-    func transcribe(_ samples: [Float], promptText: String = "") async throws -> String {
+    ///
+    /// NOTE: we deliberately do NOT pass `DecodingOptions.promptTokens` for
+    /// vocabulary biasing. Doing so corrupts WhisperKit's decoder KV-cache,
+    /// which persists on the reused instance and makes every call after the
+    /// first return an empty transcript. Vocabulary is instead handled by the
+    /// corrections map and the AI-cleanup instructions, neither of which touch
+    /// the decoder state. `language = "en"` is safe across reuse and skips
+    /// language auto-detection.
+    func transcribe(_ samples: [Float]) async throws -> String {
         guard let whisperKit else { throw TranscriberError.modelNotLoaded }
         let start = Date()
 
         var options = DecodingOptions()
         options.language = "en"
         options.usePrefillPrompt = true
-        if !promptText.isEmpty, let tokenizer = whisperKit.tokenizer {
-            options.promptTokens = tokenizer.encode(text: " " + promptText)
-            options.usePrefillPrompt = true
-            Log.stt.info("Using vocab prompt (\(promptText.count, privacy: .public) chars)")
-        }
 
         let results = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
         let text = results

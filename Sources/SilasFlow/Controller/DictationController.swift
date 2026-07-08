@@ -157,12 +157,12 @@ final class DictationController: ObservableObject {
         let useAI = settings.aiCleanup
         let restoreClipboard = settings.restoreClipboard
         let rules = VocabCorrector.parse(settings.corrections)
-        let promptText = VocabCorrector.prompt(from: settings.vocabulary, rules: rules)
+        let vocabulary = settings.vocabulary
 
         Diag.log("PIPELINE: recorded \(String(format: "%.2f", Double(samples.count) / Recorder.sampleRate))s, transcribing…")
         Task {
             do {
-                let raw = try await transcriber.transcribe(samples, promptText: promptText)
+                let raw = try await transcriber.transcribe(samples)
                 Diag.log("PIPELINE: raw transcript = \"\(raw)\"")
                 guard !raw.isEmpty else {
                     Diag.log("PIPELINE: empty transcript, nothing to inject")
@@ -171,7 +171,7 @@ final class DictationController: ObservableObject {
                     overlay.showErrorAndHide()
                     return
                 }
-                var cleaned = await CleanupEngine.clean(raw, useAI: useAI)
+                var cleaned = await CleanupEngine.clean(raw, useAI: useAI, vocabulary: vocabulary)
                 cleaned = VocabCorrector.apply(cleaned, rules: rules)
                 lastTranscript = cleaned
                 let outcome = TextInjector.insert(cleaned, restoreClipboard: restoreClipboard)

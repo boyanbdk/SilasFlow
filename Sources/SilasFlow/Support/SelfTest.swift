@@ -67,16 +67,23 @@ enum SelfTest {
                 print("[selftest] model ready in \(String(format: "%.1f", -loadStart.timeIntervalSinceNow))s")
 
                 let rules = VocabCorrector.parse(Settings.shared.corrections)
-                let promptText = VocabCorrector.prompt(from: Settings.shared.vocabulary, rules: rules)
-                print("[selftest] vocab prompt: \"\(promptText)\" | \(rules.count) correction rule(s)")
+                print("[selftest] \(rules.count) correction rule(s)")
 
-                let sttStart = Date()
-                let raw = try await transcriber.transcribe(samples, promptText: promptText)
-                print("[selftest] transcribe took \(String(format: "%.2f", -sttStart.timeIntervalSinceNow))s")
+                // Repeat N times on the SAME transcriber to catch instance-reuse bugs.
+                var repeatCount = 1
+                if let ri = args.firstIndex(of: "--repeat"), args.count > ri + 1, let n = Int(args[ri + 1]) {
+                    repeatCount = n
+                }
+                var raw = ""
+                for i in 1...repeatCount {
+                    let sttStart = Date()
+                    raw = try await transcriber.transcribe(samples)
+                    print("[selftest] call \(i)/\(repeatCount): \(String(format: "%.2f", -sttStart.timeIntervalSinceNow))s → \"\(raw)\"")
+                }
                 print("[selftest] RAW: \(raw)")
 
                 let cleanStart = Date()
-                var cleaned = await CleanupEngine.clean(raw, useAI: useAI)
+                var cleaned = await CleanupEngine.clean(raw, useAI: useAI, vocabulary: Settings.shared.vocabulary)
                 cleaned = VocabCorrector.apply(cleaned, rules: rules)
                 print("[selftest] cleanup took \(String(format: "%.2f", -cleanStart.timeIntervalSinceNow))s (ai: \(CleanupEngine.aiAvailability))")
                 print("[selftest] CLEANED: \(cleaned)")

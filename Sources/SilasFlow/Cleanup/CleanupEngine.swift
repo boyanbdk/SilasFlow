@@ -17,7 +17,9 @@ enum CleanupEngine {
     """
 
     /// Cleans a raw transcript. Never throws; degrades to rule-based output.
-    static func clean(_ raw: String, useAI: Bool) async -> String {
+    /// `vocabulary` (comma-separated custom terms) is given to the AI model so
+    /// it spells the user's names/jargon correctly.
+    static func clean(_ raw: String, useAI: Bool, vocabulary: String = "") async -> String {
         let ruled = RuleCleaner.clean(raw)
         guard useAI, !ruled.isEmpty else { return ruled }
 
@@ -28,7 +30,15 @@ enum CleanupEngine {
                 return ruled
             }
             do {
-                let session = LanguageModelSession(instructions: instructions)
+                var fullInstructions = instructions
+                let terms = vocabulary
+                    .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                if !terms.isEmpty {
+                    fullInstructions += "\nKnown terms — spell these exactly if you hear them: "
+                        + terms.joined(separator: ", ") + "."
+                }
+                let session = LanguageModelSession(instructions: fullInstructions)
                 let response = try await session.respond(to: raw)
                 let cleaned = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
                 // Guard against degenerate model output (empty or wildly longer than input).
